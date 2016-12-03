@@ -184,6 +184,7 @@ elif params['action'] == 'download':
     xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]),url=sub,listitem=listitem,isFolder=False)
 
 elif params['action'] == 'manualsearch':
+  print params
   xbmc.executebuiltin(u'Notification(%s,%s,2000,%s)' %(__scriptname__,
                                                        __language__(32004),
                                                        os.path.join(__cwd__,"icon.png")

@@ -2,12 +2,17 @@
 
 import sys
 import os
+import re
 import xmlrpclib
 import unicodedata
 import struct
 from xml.dom import minidom
 import urllib, zlib
 import xbmc, xbmcvfs
+import lxml
+from lxml.html.clean import Cleaner
+import requests
+from BeautifulSoup import BeautifulSoup
 
 try:
   # Python 2.6 +
@@ -26,8 +31,11 @@ __language__   = sys.modules[ "__main__" ].__language__
 __scriptid__   = sys.modules[ "__main__" ].__scriptid__
 
 USER_AGENT        = "%s_v%s" % (__scriptname__.replace(" ","_"),__version__ )
-SEARCH_URL        = "http://www.podnapisi.net/ppodnapisi/search?tbsl=1&sK=%s&sJ=%s&sY=%s&sTS=%s&sTE=%s&sXML=1&lang=0"
-SEARCH_URL_HASH   = "http://www.podnapisi.net/ppodnapisi/search?tbsl=1&sK=%s&sJ=%s&sY=%s&sTS=%s&sTE=%s&sMH=%s&sXML=1&lang=0"
+REQUEST_HEADERS   = {'Accept-Language': 'es-419,es;q=0.8,ar;q=0.6,en;q=0.4,gl;q=0.2,de;q=0.2,pt;q=0.2',}
+HOST              = "https://www.podnapisi.net"
+SEARCH_URL        = HOST + "/ppodnapisi/search?tbsl=1&sK=%s&sJ=%s&sY=%s&sTS=%s&sTE=%s&sXML=1&lang=0"
+SEARCH_URL        = HOST + "/subtitles/search/?keywords=%s&movie_type=%s&year=%s&seasons=%s&episodes=%s&language=%s"
+SEARCH_URL_HASH   = HOST + "/ppodnapisi/search?tbsl=1&sK=%s&sJ=%s&sY=%s&sTS=%s&sTE=%s&sMH=%s&sXML=1&lang=0"
 
 DOWNLOAD_URL      = "http://www.podnapisi.net/subtitles/%s/download"
 
@@ -102,6 +110,11 @@ def languageTranslate(lang, lang_from, lang_to):
   for x in LANGUAGES:
     if lang == x[lang_from] :
       return x[lang_to]
+
+def getLanguageName(lang):
+  for language in LANGUAGES:
+    if lang == language[2] :
+      return language[0]
 
 def log(module, msg):
   xbmc.log((u"### [%s] - %s" % (module,msg,)).encode('utf-8'),level=xbmc.LOGDEBUG ) 
@@ -272,11 +285,16 @@ class PNServer:
                                '%s,sublight:%s,sublight:%s' % (item['OShash'],item['SLhash'],md5(item['SLhash']).hexdigest() )
                                )
     else:
-      url =  SEARCH_URL % (item['title'].replace(" ","+"),
-                           ','.join(item['3let_language']),
-                           str(item['year']),
+
+      title, year = xbmc.getCleanMovieTitle(item['title'])
+      lang = __addon__.getSetting("language")
+
+      url =  SEARCH_URL % (title.replace(" ","+").replace(".","+"),
+                           str(''),
+                           str(year),
                            str(item['season']), 
-                           str(item['episode'])
+                           str(item['episode']),
+                           str(lang)
                           )
 
     log( __scriptid__ ,"Search URL - %s" % (url))
@@ -285,24 +303,29 @@ class PNServer:
 
     if subtitles:
       for subtitle in subtitles:
-        filename    = self.get_element(subtitle, "release")
+        title = self.get_element(subtitle, "release")
 
-        if filename == "":
-          filename = self.get_element(subtitle, "title")
+        if title == "":
+          title = self.get_element(subtitle, "title")
+
+          if title == "":
+            title = "Without release"
         
         hashMatch = False
         if (item['OShash'] in self.get_element(subtitle, "exactHashes") or 
            item['SLhash'] in self.get_element(subtitle, "exactHashes")):
           hashMatch = True
 
-        self.subtitles_list.append({'filename'      : filename,
-                                    'link'          : self.get_element(subtitle, "pid"),
+        lang = self.get_element(subtitle, "language")
+
+        self.subtitles_list.append({'filename'      : title,
+                                    'link'          : subtitle["data-href"],
                                     'movie_id'      : self.get_element(subtitle, "movieId"),
                                     'season'        : self.get_element(subtitle, "tvSeason"),
                                     'episode'       : self.get_element(subtitle, "tvEpisode"),
-                                    'language_name' : self.get_element(subtitle, "languageName"),
-                                    'language_flag' : self.get_element(subtitle, "language"),
-                                    'rating'        : str(int(float(self.get_element(subtitle, "rating")))*2),
+                                    'language_name' : getLanguageName(lang),
+                                    'language_flag' : lang,
+                                    'rating'        : '0',
                                     'sync'          : hashMatch,
                                     'hearing_imp'   : "n" in self.get_element(subtitle, "flags")
                                     })
@@ -322,20 +345,61 @@ class PNServer:
       if result['status'] == 200:
         log( __scriptid__ ,"Match successfuly sent")
 
-    return DOWNLOAD_URL % str(params["link"])
+    print HOST + str(params["link"])
+
+    return HOST + str(params["link"]) + "/download"
 
   def get_element(self, element, tag):
-    if element.getElementsByTagName(tag)[0].firstChild:
-      return element.getElementsByTagName(tag)[0].firstChild.data
+
+    expression = r"\b%s\b" % (tag)
+
+    bs_element = element.find(attrs={"class": re.compile(expression)})
+
+    if bs_element:
+      return bs_element.text
     else:
       return ""  
 
-  def fetch(self,url):
-    socket = urllib.urlopen( url )
-    result = socket.read()
-    socket.close()
-    xmldoc = minidom.parseString(result)
-    return xmldoc.getElementsByTagName("subtitle")    
+  def fetch(self, url):
+
+
+    # The url automatically redirects if find an specific movie.
+    # If the search matches more than one movie, there is no redirection
+    # and reurns a list of movies.
+    req = requests.get(url, headers=REQUEST_HEADERS, allow_redirects=False)
+    req.encoding = 'ISO-8859-9'
+    html = req.text.encode('ISO-8859-9')
+
+    page = BeautifulSoup(html)
+
+    # Checking if there is a movie list in the response
+    if (self.bf_check_movie_list(page)):
+
+      raw_subtitle_list = []
+      movie_list = self.bf_get_movie_list(page)
+      for movie in movie_list:
+        raw_subtitle_list += self.fetch_page_single(HOST + movie['href'])
+
+      return raw_subtitle_list
+    else:
+      return self.fetch_page_single(url)
+
+  def bf_check_movie_list(self, page):
+    return True if page.findAll(attrs={"class": re.compile(r'\bmovie_item\b')}) else False
+
+  def bf_get_movie_list(self, page):
+    return page.findAll(attrs={"class": re.compile(r'\bmovie_item\b')})
+
+  def fetch_page_single(self, url):
+    url += '&sort=stats.downloads&order=desc#list'
+    print "SEARCH URL: " + url
+    req = requests.get(url, headers=REQUEST_HEADERS)
+    req.encoding = 'ISO-8859-9'
+    html = req.text.encode('ISO-8859-9')
+
+    page = BeautifulSoup(html)
+
+    return page.findAll("tr", {"class": "subtitle-entry"})
 
   def compare_columns(self, b, a):
     return cmp( b["language_name"], a["language_name"] )  or cmp( a["sync"], b["sync"] ) 

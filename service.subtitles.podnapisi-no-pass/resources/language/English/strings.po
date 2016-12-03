@@ -15,11 +15,11 @@ msgstr ""
 #English
 
 msgctxt "#32001"
-msgid "Username"
+msgid "Subtitle Language"
 msgstr ""
 
 msgctxt "#32002"
-msgid "Password"
+msgid "Search"
 msgstr ""
 
 msgctxt "#32003"
@@ -36,4 +36,8 @@ msgstr ""
 
 msgctxt "#32006"
 msgid "Send and search movie hashes , helps improve search results."
+msgstr ""
+
+msgctxt "#32007"
+msgid "English"
 msgstr ""
